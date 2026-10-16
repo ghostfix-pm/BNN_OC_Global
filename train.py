@@ -121,7 +121,7 @@ def main():
     # -- Training with early stopping on the validation NLL ----------------
     best_nll, best_step, best_params, waited = float("inf"), 0, None, 0
     history = []
-    print(f"{'step':>8}  {'ELBO/sample':>12}  {'val NLL':>9}")
+    print(f"{'step':>8}  {'ELBO sum':>12}  {'val NLL':>9}")
     for step in range(args.max_steps):
         elbo_per = svi.step(x_train_t, y_train_t) / len(x_train)
         if step % args.check_every:
