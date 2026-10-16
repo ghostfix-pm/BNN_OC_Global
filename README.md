@@ -50,7 +50,7 @@ Inference runs on CPU; no GPU is required.
 
 ## Usage
 
-### 1. Train the model
+### 1. Train the model (optional)
 
 ```bash
 python train.py --rrs data/rrs_in.npy --chl data/chl_out.npy --out model

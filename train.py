@@ -31,7 +31,7 @@ from pyro.infer import SVI, Trace_ELBO, Predictive
 from pyro.optim import ClippedAdam
 
 from bnn_model import (CHECKPOINT_FILE, X_MEAN_FILE, X_STD_FILE,
-                       build_model_and_guide, sync_activations)
+                       build_model_and_guide, restore_params, snapshot_params)
 
 
 def parse_args():
@@ -121,7 +121,7 @@ def main():
     # -- Training with early stopping on the validation NLL ----------------
     best_nll, best_step, best_params, waited = float("inf"), 0, None, 0
     history = []
-    print(f"{'step':>8}  {'ELBO':>12}  {'val NLL':>9}")
+    print(f"{'step':>8}  {'ELBO/sample':>12}  {'val NLL':>9}")
     for step in range(args.max_steps):
         elbo_per = svi.step(x_train_t, y_train_t) / len(x_train)
         if step % args.check_every:
@@ -133,8 +133,7 @@ def main():
 
         if val_nll < best_nll - 1e-4:
             best_nll, best_step, waited = val_nll, step, 0
-            best_params = {k: v.detach().clone()
-                           for k, v in pyro.get_param_store().items()}
+            best_params = snapshot_params()
             status = "best"
         else:
             waited += 1
@@ -146,12 +145,9 @@ def main():
     print(f"Selected step {best_step} (validation NLL {best_nll:.4f})")
 
     # -- Save the selected model -------------------------------------------
-    pyro.get_param_store().clear()
-    for k, v in best_params.items():
-        pyro.param(k, v)
-    sync_activations(model)
+    restore_params(best_params)
     torch.save({"epoch": best_step, "val_nll": best_nll,
-                "params": {k: v.detach().cpu().clone() for k, v in best_params.items()}},
+                "params": {k: v.detach().cpu().clone() for k, v in pyro.get_param_store().items()}},
                os.path.join(args.out, CHECKPOINT_FILE))
     with open(os.path.join(args.out, "training_curve.csv"), "w", newline="") as f:
         w = csv.writer(f)

@@ -196,6 +196,10 @@ def main():
         raise SystemExit(f"no NetCDF files found in {args.input_dir}")
 
     lat, lon = read_grid(next(iter(files.values())))
+    # OC-CCI stores latitude north to south; outputs are written south to north
+    flip_lat, flip_lon = lat[0] > lat[-1], lon[0] > lon[-1]
+    lat = lat[::-1] if flip_lat else lat
+    lon = lon[::-1] if flip_lon else lon
     b = args.bin
     if len(lat) % b or len(lon) % b:
         raise SystemExit(f"grid {len(lat)} x {len(lon)} is not divisible by --bin {b}")
@@ -224,7 +228,10 @@ def main():
                 if tval in done:
                     continue
 
-                rrs_c, n_valid = bin_rrs(read_rrs(files[date]), b, args.min_valid)
+                rrs = read_rrs(files[date])
+                rrs = rrs[::-1] if flip_lat else rrs
+                rrs = rrs[:, ::-1] if flip_lon else rrs
+                rrs_c, n_valid = bin_rrs(rrs, b, args.min_valid)
                 x, invalid = standardise(rrs_c.reshape(-1, rrs_c.shape[-1]), x_mean, x_std)
                 mu, epi, ale = predict(predictive, x, invalid)
 

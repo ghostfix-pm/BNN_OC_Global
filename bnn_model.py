@@ -131,14 +131,30 @@ def build_model_and_guide():
     return model, guide
 
 
+def snapshot_params():
+    """Copy of the current (unconstrained) parameters in the Pyro param store."""
+    return {k: v.detach().clone() for k, v in pyro.get_param_store().named_parameters()}
+
+
+def restore_params(snapshot):
+    """
+    Restore a snapshot in place. The model and guide hold the same tensor
+    objects as the param store, so copying into them restores the network
+    itself; replacing the store entries (clear + pyro.param) would not.
+    """
+    with torch.no_grad():
+        for k, v in pyro.get_param_store().named_parameters():
+            v.copy_(snapshot[k])
+
+
 def sync_activations(model):
     """
     Copy the Swish parameters held in the Pyro parameter store into the model.
 
     The Swish modules are plain torch modules: the network uses the values
     stored on the modules themselves, not the values in the parameter store.
-    After parameters are restored into the store (best checkpoint, or a model
-    loaded from disk) this keeps the network consistent with them.
+    When a model is loaded from disk this makes the network use the loaded
+    values.
     """
     store = pyro.get_param_store()
     with torch.no_grad():
