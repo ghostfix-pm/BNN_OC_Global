@@ -3,8 +3,8 @@ message: "If you use this code, please cite the article and the code release."
 title: "Code for: Global daily Chlorophyll-a retrievals with per-pixel uncertainty from a Bayesian Neural Network"
 version: 1.0.0
 license: MIT
-repository-code: "<repository URL>"
-doi: "<code DOI>"
+repository-code: "https://github.com/nikopapa21/BNN_OC_Global"
+doi: "10.5281/zenodo.23416584"
 authors:
   - family-names: Papagiannopoulos
     given-names: Nikolaos
