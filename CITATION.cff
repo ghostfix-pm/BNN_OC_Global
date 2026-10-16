@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the article and the code release."
+title: "Code for: Global daily Chlorophyll-a retrievals with per-pixel uncertainty from a Bayesian Neural Network"
+version: 1.0.0
+license: MIT
+repository-code: "<repository URL>"
+doi: "<code DOI>"
+authors:
+  - family-names: Papagiannopoulos
+    given-names: Nikolaos
+  - family-names: Hoteit
+    given-names: Ibrahim
+  - family-names: Zhan
+    given-names: Peng
+preferred-citation:
+  type: article
+  title: "Global daily Chlorophyll-a retrievals with per-pixel uncertainty from a Bayesian Neural Network"
+  journal: "Scientific Data"
+  doi: "<paper DOI>"
+  authors:
+    - family-names: Papagiannopoulos
+      given-names: Nikolaos
+    - family-names: Hoteit
+      given-names: Ibrahim
+    - family-names: Zhan
+      given-names: Peng
