@@ -1,12 +1,10 @@
 # Global daily chlorophyll-a with per-pixel uncertainty from a Bayesian neural network
 
-[![DOI](https://zenodo.org/badge/DOI/<code DOI>.svg)](https://doi.org/<code DOI>)
-
 This repository contains the code used to train the Bayesian neural network (BNN) and to generate the global daily chlorophyll-a (Chl-a) dataset described in:
 
 > Papagiannopoulos, N., Hoteit, I. & Zhan, P. Global daily Chlorophyll-*a* retrievals with per-pixel uncertainty from a Bayesian Neural Network. *Scientific Data* (submitted).
 
-The dataset is available at <dataset DOI>.
+The dataset is available at 10.5281/zenodo.23416584.
 
 ## Overview
 
