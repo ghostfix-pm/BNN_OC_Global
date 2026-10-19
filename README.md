@@ -99,15 +99,13 @@ Chl-a in mg m⁻³ is `10**chl_mean`. The total predictive uncertainty is `sqrt(
 
 ## Reproducibility and computational requirements
 
-All random seeds are fixed (seed 1 for the data split and training, seed 42 for posterior sampling at inference), so repeated runs with the same software versions on the same hardware give identical results. Results can differ slightly between PyTorch and Pyro versions; the published dataset was produced with Python <version>, PyTorch <version> and Pyro <version>.
-
-At 4 km, inference on one day takes about 5–6 minutes on 20 CPU threads and holds all posterior samples for the day in memory. The 0.25° run performs 36 times fewer retrievals.
+All random seeds are fixed (seed 1 for the data split and training, seed 42 for posterior sampling at inference), so repeated runs with the same software versions on the same hardware give identical results. Results can differ slightly between PyTorch and Pyro versions.
 
 ## Citation
 
 If you use this code, please cite the paper above and the code release:
 
-> Papagiannopoulos, N., Hoteit, I. & Zhan, P. Code for: Global daily Chlorophyll-*a* retrievals with per-pixel uncertainty from a Bayesian Neural Network. Zenodo, <code DOI> (2026).
+> Papagiannopoulos, N., Hoteit, I. & Zhan, P. Code for: Global daily Chlorophyll-*a* retrievals with per-pixel uncertainty from a Bayesian Neural Network. Zenodo, 10.5281/zenodo.23416584 (2026).
 
 Citation metadata is also provided in `CITATION.cff`.
 
@@ -117,4 +115,4 @@ The code is released under the MIT Licence (see `LICENSE`). The dataset is distr
 
 ## Contact
 
-<name> (<email>)
+Nikolaos Papagiannopoulos (nikpap@sustech.edu.cn)
