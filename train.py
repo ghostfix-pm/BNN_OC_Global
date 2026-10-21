@@ -12,10 +12,13 @@ Outputs (in --out):
   x_train_std.npy          training std of log10 Rrs
   training_curve.csv       ELBO per sample and validation NLL during training
   test_metrics.json        accuracy and calibration on the test partition
-  test_predictions.csv     per-sample test predictions and uncertainties
+  test_predictions.csv     one row per test record: in situ and predicted
+                           log10(Chl-a) plus the epistemic, aleatoric and total
+                           predictive standard deviations
 
 Example:
   python train.py --rrs data/rrs_in.npy --chl data/chl_out.npy --out model
+  python train.py --rrs data/rrs_in.npy --chl data/chl_out.npy --check-data
 """
 
 import argparse
@@ -24,14 +27,13 @@ import json
 import os
 
 import numpy as np
-import torch
-import pyro
-import pyro.distributions as dist
-from pyro.infer import SVI, Trace_ELBO, Predictive
-from pyro.optim import ClippedAdam
 
-from bnn_model import (CHECKPOINT_FILE, X_MEAN_FILE, X_STD_FILE,
-                       build_model_and_guide, restore_params, snapshot_params)
+# data_utils is NumPy-only, so --check-data (which validates the in situ
+# database and exits) works without PyTorch or Pyro installed; the deep
+# learning stack is imported in main() once the arguments are settled.
+from data_utils import (DEFAULT_TEST_FRAC, DEFAULT_VAL_FRAC, DatasetError,
+                        describe_dataset, load_dataset, split_dataset,
+                        standardisation, to_log10)
 
 
 def parse_args():
@@ -43,8 +45,8 @@ def parse_args():
                    help="in situ Chl-a, .npy array (N, 1) in mg m-3")
     p.add_argument("--out", default="model", help="output directory")
     p.add_argument("--seed", type=int, default=1)
-    p.add_argument("--val-frac", type=float, default=0.15)
-    p.add_argument("--test-frac", type=float, default=0.15)
+    p.add_argument("--val-frac", type=float, default=DEFAULT_VAL_FRAC)
+    p.add_argument("--test-frac", type=float, default=DEFAULT_TEST_FRAC)
     p.add_argument("--max-steps", type=int, default=100_000)
     p.add_argument("--check-every", type=int, default=1_000,
                    help="SVI steps between validation-NLL evaluations")
@@ -54,57 +56,104 @@ def parse_args():
                    help="posterior samples for the validation NLL")
     p.add_argument("--test-samples", type=int, default=500,
                    help="posterior samples for the test evaluation")
+    p.add_argument("--check-data", action="store_true",
+                   help="validate the in situ database, print a summary and exit without "
+                        "training (needs only NumPy)")
     return p.parse_args()
 
 
-def predictive_moments(predictive, x_t):
-    """Predictive mean and epistemic / aleatoric variances (law of total variance)."""
-    with torch.no_grad():
-        s = predictive(x_t)
-    mu_s, sig_s = s["mu"], s["ale_std"]
-    return mu_s.mean(0), mu_s.var(0), (sig_s ** 2).mean(0)
+def validate_args(args):
+    """Reject argument values that cannot produce a model."""
+    for flag, value in (("--max-steps", args.max_steps),
+                        ("--check-every", args.check_every),
+                        ("--val-samples", args.val_samples),
+                        ("--test-samples", args.test_samples),
+                        ("--patience", args.patience)):
+        if value < 1:
+            raise SystemExit(f"error: {flag} must be at least 1, got {value}")
+
+
+def print_dataset_summary(rrs_path, chl_path, info):
+    """Human-readable form of data_utils.describe_dataset()."""
+    print(f"Rrs   : {rrs_path}  ({info['n_records']} records x {info['n_bands']} bands "
+          f"{'/'.join(str(b) for b in info['bands_nm'])} nm)")
+    print(f"Chl-a : {chl_path}")
+    print(f"usable for training: {info['n_usable']} of {info['n_records']} "
+          f"(dropped {info['n_dropped']})")
+    if info["n_invalid_chl"]:
+        print(f"  non-positive or non-finite Chl-a: {info['n_invalid_chl']} records")
+    if info["n_nonfinite_rrs"]:
+        print(f"  non-finite Rrs band: {info['n_nonfinite_rrs']} records")
+    if "chl_min" in info:
+        print(f"Chl-a range      : {info['chl_min']:.4g} .. {info['chl_max']:.4g} mg m-3")
+    if "log10_rrs_min" in info:
+        print(f"log10(Rrs) range : {info['log10_rrs_min']:.3f} .. {info['log10_rrs_max']:.3f}")
+        print(f"log10(Rrs) mean  : {info['log10_rrs_mean']}")
+        print(f"log10(Rrs) std   : {info['log10_rrs_std']}")
 
 
 def main():
     args = parse_args()
+    validate_args(args)
+
+    # -- Data (NumPy only, so --check-data needs no deep-learning stack) ----
+    try:
+        rrs, chl = load_dataset(args.rrs, args.chl)
+        info = describe_dataset(rrs, chl)
+    except DatasetError as exc:
+        raise SystemExit(f"error: {exc}") from None
+
+    if args.check_data:
+        print_dataset_summary(args.rrs, args.chl, info)
+        if info["n_usable"] < 3:
+            raise SystemExit(f"error: only {info['n_usable']} usable records: at least 3 are "
+                             "needed for the train / validation / test split")
+        print(f"\n{info['n_usable']} usable records: the database matches the documented "
+              "format.")
+        return
+
+    import pyro
+    import pyro.distributions as dist
+    import torch
+    from pyro.infer import SVI, Trace_ELBO, Predictive
+    from pyro.optim import ClippedAdam
+
+    from bnn_model import (CHECKPOINT_FILE, X_MEAN_FILE, X_STD_FILE,
+                           build_model_and_guide, predictive_moments, restore_params,
+                           snapshot_params)
+
     os.makedirs(args.out, exist_ok=True)
 
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     pyro.set_rng_seed(args.seed)
 
-    # -- Data --------------------------------------------------------------
-    rrs = np.load(args.rrs)
-    chl = np.load(args.chl).reshape(len(rrs), -1)
+    # -- Data: shuffle with the fixed seed, then drop unusable records ------
     perm = np.random.permutation(len(rrs))
-    rrs, chl = rrs[perm, :], chl[perm, :]
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        x_all = np.log10(rrs)
-        y_all = np.log10(chl[:, 0])
-    finite = np.isfinite(x_all).all(axis=1) & np.isfinite(y_all)
-    x_all, y_all = x_all[finite], y_all[finite]
+    rrs, chl = rrs[perm, :], chl[perm]
+    x_all, y_all, usable = to_log10(rrs, chl)
+    x_all, y_all = x_all[usable], y_all[usable]
 
     # -- Split: [ test | train | validation ] of the shuffled rows ---------
-    n_all = len(x_all)
-    n_val = int(args.val_frac * n_all)
-    n_test = int(args.test_frac * n_all)
-    n_train = n_all - n_val - n_test
-    x_test, y_test = x_all[:n_test], y_all[:n_test]
-    x_train, y_train = x_all[n_test:n_test + n_train], y_all[n_test:n_test + n_train]
-    x_val, y_val = x_all[n_test + n_train:], y_all[n_test + n_train:]
+    try:
+        split = split_dataset(len(x_all), args.val_frac, args.test_frac)
+    except DatasetError as exc:
+        raise SystemExit(f"error: {exc}") from None
+    x_test, y_test = x_all[split.test], y_all[split.test]
+    x_train, y_train = x_all[split.train], y_all[split.train]
+    x_val, y_val = x_all[split.validation], y_all[split.validation]
 
     # -- Standardisation (training statistics only) ------------------------
-    x_mean = x_train.mean(axis=0)
-    x_std = x_train.std(axis=0) + 1e-8
+    x_mean, x_std = standardisation(x_train)
     x_train = (x_train - x_mean) / x_std
     x_val = (x_val - x_mean) / x_std
     x_test = (x_test - x_mean) / x_std
     np.save(os.path.join(args.out, X_MEAN_FILE), x_mean)
     np.save(os.path.join(args.out, X_STD_FILE), x_std)
-    print(f"Samples: train {len(x_train)}, validation {len(x_val)}, test {len(x_test)}")
+    print(f"Samples: train {split.n_train}, validation {split.n_validation}, "
+          f"test {split.n_test}")
 
-    t = lambda a: torch.from_numpy(a).float()
+    t = lambda a: torch.from_numpy(a).float()  # noqa: E731
     x_train_t, y_train_t = t(x_train), t(y_train)
     x_val_t, y_val_t = t(x_val), t(y_val)
     x_test_t = t(x_test)
@@ -174,11 +223,21 @@ def main():
     }
     with open(os.path.join(args.out, "test_metrics.json"), "w") as f:
         json.dump(metrics, f, indent=2)
+
+    # test_predictions.csv is one row per test record: every column must be a
+    # 1-D array of length n_test, otherwise csv.writer silently emits a single
+    # row whose fields are whole arrays.
+    columns = [("log10_chl_insitu", y_test), ("log10_chl_pred", mu),
+               ("std_epistemic", epi), ("std_aleatoric", ale), ("std_total", tot)]
+    for name, column in columns:
+        column = np.asarray(column)
+        if column.ndim != 1 or column.shape[0] != metrics["n_test"]:
+            raise ValueError(f"internal error: the {name} column has shape {column.shape}, "
+                             f"expected ({metrics['n_test']},)")
     with open(os.path.join(args.out, "test_predictions.csv"), "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["log10_chl_insitu", "log10_chl_pred", "std_epistemic",
-                    "std_aleatoric", "std_total"])
-        w.writerows(zip(y_test, mu, epi, ale, tot))
+        w.writerow([name for name, _ in columns])
+        w.writerows(zip(*(column for _, column in columns), strict=True))
 
     print("Test partition:")
     for k, v in metrics.items():

@@ -18,12 +18,10 @@ from pyro.infer import Predictive
 from pyro.infer.autoguide import AutoLowRankMultivariateNormal
 from pyro.nn import PyroModule, PyroSample
 
-# ---------------------------------------------------------------------------
-# Inputs
-# ---------------------------------------------------------------------------
-BANDS_NM = (443, 490, 510, 560)                 # Rrs input bands (nm)
-RRS_VARIABLES = tuple(f"Rrs_{b}" for b in BANDS_NM)
-RRS_FLOOR = 1e-6                                # Rrs (sr-1) is clipped here before log10
+# The band definition lives in data_utils (NumPy-only) so that the data
+# contract can be validated without importing PyTorch or Pyro; re-exported
+# here for the callers that expect it in this module.
+from data_utils import BANDS_NM, N_BANDS, RRS_FLOOR, RRS_VARIABLES  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Hyperparameters of the published model
@@ -166,6 +164,57 @@ def sync_activations(model):
 # ---------------------------------------------------------------------------
 # Preprocessing and inference
 # ---------------------------------------------------------------------------
+def _as_sample_matrix(samples, n_rows, site):
+    """
+    Reshape a posterior predictive site to (num_samples, n_rows).
+
+    The auto guide fixes its prototype batch shape on its first call, so every
+    evaluation site carries that (otherwise redundant) size-1 batch dimension:
+    with a guide prototyped on a single observation row, ``mu`` comes back as
+    (num_samples, 1, n_rows) instead of (num_samples, n_rows). Reducing the
+    wrong axis is a silent error, so the shape is verified here.
+    """
+    samples = samples.detach()
+    if samples.dim() < 2:
+        raise ValueError(
+            f"the predictive site {site!r} has shape {tuple(samples.shape)}: expected at "
+            "least (num_samples, n_rows)")
+    if samples.shape[-1] != n_rows:
+        raise ValueError(
+            f"the predictive site {site!r} holds {samples.shape[-1]} values per sample but "
+            f"{n_rows} input rows were passed")
+    batch_shape = tuple(samples.shape[1:-1])
+    if any(dim != 1 for dim in batch_shape):
+        raise ValueError(
+            f"the predictive site {site!r} has shape {tuple(samples.shape)}: the extra batch "
+            f"dimensions {batch_shape} are not supported. Build the predictive from a guide "
+            "whose prototype was set with a single observation row.")
+    return samples.reshape(samples.shape[0], n_rows)
+
+
+def predictive_moments(predictive, x, seed=None):
+    """
+    Posterior predictive mean and the epistemic and aleatoric 1-sigma
+    uncertainties of a batch of standardised inputs (log10 units), decomposed
+    with the law of total variance.
+
+    Returns three tensors with one value per input row. The Monte Carlo seed is
+    only set when one is given, so by default repeated calls draw independent
+    samples instead of replaying the same draws.
+    """
+    x = torch.as_tensor(x).float()
+    n_rows = int(x.shape[0])
+    if seed is not None:
+        torch.manual_seed(seed)
+        pyro.set_rng_seed(seed)
+    with torch.no_grad():
+        samples = predictive(x)
+
+    mu_s = _as_sample_matrix(samples["mu"].cpu(), n_rows, "mu")            # (S, n_rows)
+    sigma_s = _as_sample_matrix(samples["ale_std"].cpu(), n_rows, "ale_std")
+    return mu_s.mean(dim=0), mu_s.var(dim=0), (sigma_s ** 2).mean(dim=0)
+
+
 def standardise(rrs, x_mean, x_std):
     """
     Rrs (sr-1, shape (N, 4)) -> standardised log10 Rrs.
@@ -173,6 +222,8 @@ def standardise(rrs, x_mean, x_std):
     returned mask so they can be skipped.
     """
     rrs = np.asarray(rrs, dtype=np.float64)
+    if rrs.ndim != 2 or rrs.shape[1] != N_BANDS:
+        raise ValueError(f"Rrs must be a 2-D array with {N_BANDS} bands, got shape {rrs.shape}")
     invalid = ~np.isfinite(rrs).all(axis=1)
     x = (np.log10(np.clip(np.nan_to_num(rrs, nan=1.0), RRS_FLOOR, None)) - x_mean) / x_std
     x[invalid] = 0.0
@@ -186,6 +237,9 @@ def predict(predictive, x, invalid, seed=42):
     Returns the predictive mean of log10(Chl-a) and the epistemic and
     aleatoric 1-sigma uncertainties (log10 units), decomposed with the law of
     total variance; invalid rows are NaN.
+
+    ``seed`` reproduces the published dataset (42); pass None to draw fresh
+    Monte Carlo samples and leave the global random state untouched.
     """
     n = len(invalid)
     mu = np.full(n, np.nan, dtype=np.float32)
@@ -195,16 +249,10 @@ def predict(predictive, x, invalid, seed=42):
     if valid_idx.size == 0:
         return mu, epi, ale
 
-    torch.manual_seed(seed)
-    pyro.set_rng_seed(seed)
-    with torch.no_grad():
-        s = predictive(torch.from_numpy(x[valid_idx]))
-    mu_s = s["mu"].cpu()          # (S, N_valid)
-    sig_s = s["ale_std"].cpu()    # (S, N_valid)
-
-    mu[valid_idx] = mu_s.mean(dim=0).numpy().ravel()
-    epi[valid_idx] = mu_s.var(dim=0).sqrt().numpy().ravel()
-    ale[valid_idx] = (sig_s ** 2).mean(dim=0).sqrt().numpy().ravel()
+    mean, var_epi, var_ale = predictive_moments(predictive, x[valid_idx], seed=seed)
+    mu[valid_idx] = mean.numpy()
+    epi[valid_idx] = var_epi.sqrt().numpy()
+    ale[valid_idx] = var_ale.sqrt().numpy()
     return mu, epi, ale
 
 
@@ -214,20 +262,48 @@ def load_trained_model(model_dir, num_samples=100):
 
     Returns (predictive, x_mean, x_std).
     """
-    ckpt = torch.load(os.path.join(model_dir, CHECKPOINT_FILE),
-                      map_location="cpu", weights_only=True)
-    x_mean = np.load(os.path.join(model_dir, X_MEAN_FILE))
-    x_std = np.load(os.path.join(model_dir, X_STD_FILE))
+    checkpoint_path = os.path.join(model_dir, CHECKPOINT_FILE)
+    if not os.path.isfile(checkpoint_path):
+        raise FileNotFoundError(
+            f"{checkpoint_path} not found: train the model first (python train.py --rrs "
+            f"<rrs.npy> --chl <chl.npy> --out {model_dir}) or point --model-dir at a folder "
+            "written by it")
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    if not isinstance(ckpt, dict) or "params" not in ckpt:
+        raise ValueError(f"{checkpoint_path} has no 'params' entry: it was not written by train.py")
+
+    def statistics(name):
+        path = os.path.join(model_dir, name)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(
+                f"{path} not found: {model_dir} is not a complete model folder written by train.py")
+        values = np.load(path)
+        if values.shape != (N_BANDS,):
+            raise ValueError(
+                f"{path} has shape {values.shape}, expected ({N_BANDS},) for the "
+                f"{N_BANDS} input bands")
+        return values
+
+    x_mean, x_std = statistics(X_MEAN_FILE), statistics(X_STD_FILE)
 
     pyro.clear_param_store()
     model, guide = build_model_and_guide()
-    for k, v in ckpt["params"].items():
-        pyro.param(k, v)
+    params = ckpt["params"]
+    for key, value in params.items():
+        pyro.param(key, value)
     # Initialise the guide once, as in training (with an observed target), so
     # that it binds to the loaded parameters
     with torch.no_grad():
-        guide(torch.zeros(1, len(BANDS_NM)), torch.zeros(1))
+        guide(torch.zeros(1, N_BANDS), torch.zeros(1))
     sync_activations(model)
+
+    # A checkpoint that does not cover every parameter of the architecture
+    # would silently leave the missing ones at their initial values.
+    missing = sorted(set(pyro.get_param_store().keys()) - set(params))
+    if missing:
+        raise ValueError(
+            f"{checkpoint_path} does not contain {missing}: it was written by a different "
+            "architecture or hyper-parameters than the ones built here")
 
     predictive = Predictive(model, guide=guide, num_samples=num_samples,
                             return_sites=["mu", "ale_std"])
