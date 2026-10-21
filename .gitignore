@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Trained model and generated datasets (reproducible from train.py / predict_global.py)
+/model/
+/output/
+/output_4km/
+*.nc

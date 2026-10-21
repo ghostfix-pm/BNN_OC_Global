@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bnn-oc-cci-chl"
+version = "1.0.0"
+description = "Heteroscedastic Bayesian neural network for global daily chlorophyll-a retrieval with per-pixel uncertainty"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "Nikolaos Papagiannopoulos" }]
+keywords = ["ocean-colour", "chlorophyll-a", "bayesian-neural-network", "uncertainty", "remote-sensing"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.24",
+    "torch>=2.0",
+    "pyro-ppl>=1.8.6",
+    "netCDF4>=1.6",
+    "tqdm>=4.60",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "ruff>=0.4"]
+
+# The workflow scripts (train.py, predict_global.py) are run from a checkout;
+# these are the modules they import.
+[tool.setuptools]
+py-modules = ["bnn_model", "data_utils", "oc_cci"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP"]
